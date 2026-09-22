@@ -552,8 +552,9 @@ async def admin_callbacks(callback: CallbackQuery):
 
 @dp.message(F.text)
 async def admin_product_input(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if user_id not in ADMIN_IDS:
         return
+        
 
     state = user_states.get(message.from_user.id)
 
