@@ -1,8 +1,3 @@
-import asyncio
-import os
-import sqlite3
-from datetime import datetime
-
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -12,502 +7,649 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 
-# =========================================================
-# НАСТРОЙКИ
-# =========================================================
+from .config import BOT_TOKEN, ADMIN_ID
+from .db import (
+    init_db,
+    add_product,
+    get_products,
+    get_product,
+    create_order,
+    get_user_orders,
+    get_all_orders,
+)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-if not BOT_TOKEN:
-    raise RuntimeError("Не найден BOT_TOKEN. Добавь его в переменные окружения.")
-
-DB_NAME = "money_bot.db"
-
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-
-# =========================================================
-# БАЗА ДАННЫХ
-# =========================================================
-
-db = sqlite3.connect(DB_NAME)
-cursor = db.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    balance REAL DEFAULT 0
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    amount REAL,
-    type TEXT,
-    comment TEXT,
-    created_at TEXT
-)
-""")
-
-db.commit()
+user_states = {}
 
 
-# =========================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# =========================================================
-
-def get_user(user_id: int):
-    cursor.execute(
-        "SELECT user_id, balance FROM users WHERE user_id = ?",
-        (user_id,)
-    )
-
-    user = cursor.fetchone()
-
-    if not user:
-        cursor.execute(
-            "INSERT INTO users (user_id, balance) VALUES (?, ?)",
-            (user_id, 0)
-        )
-        db.commit()
-        return (user_id, 0)
-
-    return user
-
-
-def get_balance(user_id: int) -> float:
-    user = get_user(user_id)
-    return float(user[1])
-
-
-def change_balance(
-    user_id: int,
-    amount: float,
-    transaction_type: str,
-    comment: str
-):
-    get_user(user_id)
-
-    balance = get_balance(user_id)
-
-    if transaction_type == "expense":
-        new_balance = balance - amount
-    else:
-        new_balance = balance + amount
-
-    cursor.execute(
-        "UPDATE users SET balance = ? WHERE user_id = ?",
-        (new_balance, user_id)
-    )
-
-    cursor.execute(
-        """
-        INSERT INTO transactions
-        (user_id, amount, type, comment, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            amount,
-            transaction_type,
-            comment,
-            datetime.now().strftime("%d.%m.%Y %H:%M")
-        )
-    )
-
-    db.commit()
-
-    return new_balance
-
-
-def main_keyboard():
+def main_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="💰 Баланс",
-                    callback_data="balance"
-                ),
-                InlineKeyboardButton(
-                    text="📊 Статистика",
-                    callback_data="stats"
+                    text="🪙 Купить вирты",
+                    callback_data="virtuals",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="➕ Доход",
-                    callback_data="income"
-                ),
-                InlineKeyboardButton(
-                    text="➖ Расход",
-                    callback_data="expense"
+                    text="🎮 Аккаунты",
+                    callback_data="accounts",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📜 История",
-                    callback_data="history"
+                    text="📦 Мои заказы",
+                    callback_data="orders",
                 )
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💬 Поддержка",
+                    callback_data="support",
+                )
+            ],
         ]
     )
 
 
-def back_keyboard():
+def back_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="◀️ Назад",
-                    callback_data="menu"
+                    callback_data="menu",
                 )
             ]
         ]
     )
 
 
-# =========================================================
-# СТАРТ
-# =========================================================
+def admin_menu():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ Добавить вирты",
+                    callback_data="admin_add_virtuals",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎮 Добавить аккаунт",
+                    callback_data="admin_add_account",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📦 Товары",
+                    callback_data="admin_products",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📋 Заказы",
+                    callback_data="admin_orders",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ В магазин",
+                    callback_data="menu",
+                )
+            ],
+        ]
+    )
+
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    user_id = message.from_user.id
-    get_user(user_id)
-
-    name = message.from_user.first_name or "друг"
-
     text = (
-        f"👋 Привет, {name}!\n\n"
-        "💳 Личный финансовый помощник\n\n"
-        "Здесь можно:\n"
-        "• учитывать доходы\n"
-        "• записывать расходы\n"
-        "• смотреть баланс\n"
-        "• смотреть статистику\n"
-        "• просматривать историю операций\n\n"
-        "Выбирай действие ниже 👇"
+        "💎 <b>MinPay</b>\n\n"
+        "Магазин игровых виртов и аккаунтов.\n\n"
+        "🪙 Вирты — пакеты до 200 млн\n"
+        "🎮 Аккаунты — товары из наличия\n"
+        "🔐 Быстрое оформление заказа\n\n"
+        "Выбери нужный раздел:"
     )
 
     await message.answer(
         text,
-        reply_markup=main_keyboard()
+        parse_mode="HTML",
+        reply_markup=main_menu(),
     )
 
-
-# =========================================================
-# ГЛАВНОЕ МЕНЮ
-# =========================================================
 
 @dp.callback_query(F.data == "menu")
 async def menu(callback: CallbackQuery):
     await callback.answer()
 
     await callback.message.edit_text(
-        "🏠 Главное меню\n\nВыбери нужное действие:",
-        reply_markup=main_keyboard()
+        "💎 <b>MinPay</b>\n\nВыбери нужный раздел:",
+        parse_mode="HTML",
+        reply_markup=main_menu(),
     )
 
 
-# =========================================================
-# БАЛАНС
-# =========================================================
-
-@dp.callback_query(F.data == "balance")
-async def balance(callback: CallbackQuery):
+@dp.callback_query(F.data == "virtuals")
+async def virtuals(callback: CallbackQuery):
     await callback.answer()
 
-    user_id = callback.from_user.id
-    current_balance = get_balance(user_id)
+    products = get_products("virtuals")
 
-    if current_balance > 0:
-        status = "🟢"
-    elif current_balance < 0:
-        status = "🔴"
-    else:
-        status = "⚪"
+    if not products:
+        await callback.message.edit_text(
+            "🪙 <b>Вирты</b>\n\n"
+            "Сейчас товаров в наличии нет.",
+            parse_mode="HTML",
+            reply_markup=back_menu(),
+        )
+        return
+
+    buttons = []
+
+    for product in products:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🪙 {product['title']} — {product['price']:,.0f} ₽",
+                    callback_data=f"product:{product['id']}",
+                )
+            ]
+        )
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="◀️ Назад",
+                callback_data="menu",
+            )
+        ]
+    )
+
+    await callback.message.edit_text(
+        "🪙 <b>Вирты</b>\n\n"
+        "Выбери пакет:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=buttons
+        ),
+    )
+
+
+@dp.callback_query(F.data == "accounts")
+async def accounts(callback: CallbackQuery):
+    await callback.answer()
+
+    products = get_products("accounts")
+
+    if not products:
+        await callback.message.edit_text(
+            "🎮 <b>Аккаунты</b>\n\n"
+            "Сейчас аккаунтов в наличии нет.",
+            parse_mode="HTML",
+            reply_markup=back_menu(),
+        )
+        return
+
+    buttons = []
+
+    for product in products:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🎮 {product['title']} — {product['price']:,.0f} ₽",
+                    callback_data=f"product:{product['id']}",
+                )
+            ]
+        )
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="◀️ Назад",
+                callback_data="menu",
+            )
+        ]
+    )
+
+    await callback.message.edit_text(
+        "🎮 <b>Аккаунты</b>\n\n"
+        "Выбери аккаунт:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=buttons
+        ),
+    )
+
+
+@dp.callback_query(F.data.startswith("product:"))
+async def product_page(callback: CallbackQuery):
+    await callback.answer()
+
+    product_id = int(callback.data.split(":")[1])
+    product = get_product(product_id)
+
+    if not product or not product["active"]:
+        await callback.message.edit_text(
+            "❌ Товар больше недоступен.",
+            reply_markup=back_menu(),
+        )
+        return
+
+    description = product["description"] or "Описание отсутствует."
 
     text = (
-        "💰 Текущий баланс\n\n"
-        f"{status} {current_balance:,.2f} ₽\n\n"
-        "Баланс рассчитан по всем сохранённым операциям."
+        f"<b>{product['title']}</b>\n\n"
+        f"{description}\n\n"
+        f"💰 Цена: <b>{product['price']:,.0f} ₽</b>\n"
+        "📦 В наличии"
     )
+
+    category = product["category"]
 
     await callback.message.edit_text(
         text,
-        reply_markup=back_keyboard()
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="💳 Выбрать оплату",
+                        callback_data=f"pay:{product_id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="◀️ Назад",
+                        callback_data=category,
+                    )
+                ],
+            ]
+        ),
     )
 
 
-# =========================================================
-# СТАТИСТИКА
-# =========================================================
-
-@dp.callback_query(F.data == "stats")
-async def statistics(callback: CallbackQuery):
+@dp.callback_query(F.data.startswith("pay:"))
+async def payment_methods(callback: CallbackQuery):
     await callback.answer()
 
-    user_id = callback.from_user.id
+    product_id = int(callback.data.split(":")[1])
+    product = get_product(product_id)
 
-    cursor.execute(
-        """
-        SELECT
-            COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0)
-        FROM transactions
-        WHERE user_id = ?
-        """,
-        (user_id,)
+    if not product:
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🟢 Сбер",
+                    callback_data=f"bank:Сбер:{product_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🔵 Т-Банк",
+                    callback_data=f"bank:Т-Банк:{product_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔴 Альфа-Банк",
+                    callback_data=f"bank:Альфа-Банк:{product_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🔵 ВТБ",
+                    callback_data=f"bank:ВТБ:{product_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🟠 Газпромбанк",
+                    callback_data=f"bank:Газпромбанк:{product_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🟡 Совкомбанк",
+                    callback_data=f"bank:Совкомбанк:{product_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔵 МТС Банк",
+                    callback_data=f"bank:МТС Банк:{product_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🟣 Райффайзен",
+                    callback_data=f"bank:Райффайзенбанк:{product_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🟢 Ак Барс",
+                    callback_data=f"bank:Ак Барс Банк:{product_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🟠 Уралсиб",
+                    callback_data=f"bank:Уралсиб:{product_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🟠 ОТП Банк",
+                    callback_data=f"bank:ОТП Банк:{product_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🟢 СБП",
+                    callback_data=f"bank:СБП:{product_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data=f"product:{product_id}",
+                )
+            ],
+        ]
     )
 
-    income, expense = cursor.fetchone()
-
-    balance_value = income - expense
-
-    text = (
-        "📊 Финансовая статистика\n\n"
-        f"🟢 Доходы: {income:,.2f} ₽\n"
-        f"🔴 Расходы: {expense:,.2f} ₽\n"
-        f"💰 Баланс: {balance_value:,.2f} ₽\n\n"
-        f"📈 Оборот: {income + expense:,.2f} ₽"
+    await callback.message.edit_text(
+        "💳 <b>Выбор оплаты</b>\n\n"
+        f"🛒 {product['title']}\n"
+        f"💰 {product['price']:,.0f} ₽\n\n"
+        "Выбери удобный способ:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
     )
+
+
+@dp.callback_query(F.data.startswith("bank:"))
+async def bank_selected(callback: CallbackQuery):
+    await callback.answer()
+
+    _, bank, product_id = callback.data.split(":", 2)
+
+    product = get_product(int(product_id))
+
+    if not product:
+        return
+
+    order_id = create_order(
+        callback.from_user.id,
+        product["id"],
+        product["price"],
+        bank,
+    )
+
+    await callback.message.edit_text(
+        "💳 <b>Заказ создан</b>\n\n"
+        f"🧾 Заказ: <b>#{order_id}</b>\n"
+        f"🛒 {product['title']}\n"
+        f"💰 {product['price']:,.0f} ₽\n"
+        f"🏦 {bank}\n\n"
+        "Для оплаты используй официальный сайт или приложение "
+        "выбранного банка.\n\n"
+        "⚠️ MinPay никогда не запрашивает пароль, SMS-код "
+        "или данные карты.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📦 Мои заказы",
+                        callback_data="orders",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="◀️ В магазин",
+                        callback_data="menu",
+                    )
+                ],
+            ]
+        ),
+    )
+
+
+@dp.callback_query(F.data == "orders")
+async def orders(callback: CallbackQuery):
+    await callback.answer()
+
+    rows = get_user_orders(callback.from_user.id)
+
+    if not rows:
+        await callback.message.edit_text(
+            "📦 <b>Мои заказы</b>\n\n"
+            "У тебя пока нет заказов.",
+            parse_mode="HTML",
+            reply_markup=back_menu(),
+        )
+        return
+
+    text = "📦 <b>Мои заказы</b>\n\n"
+
+    for row in rows:
+        text += (
+            f"🧾 <b>#{row['id']}</b>\n"
+            f"🛒 {row['title']}\n"
+            f"💰 {row['price']:,.0f} ₽\n"
+            f"🏦 {row['payment_method']}\n"
+            f"📌 {row['status']}\n"
+            f"🕐 {row['created_at']}\n\n"
+        )
 
     await callback.message.edit_text(
         text,
-        reply_markup=back_keyboard()
+        parse_mode="HTML",
+        reply_markup=back_menu(),
     )
 
 
-# =========================================================
-# ДОБАВЛЕНИЕ ДОХОДА
-# =========================================================
-
-@dp.callback_query(F.data == "income")
-async def income_start(callback: CallbackQuery):
+@dp.callback_query(F.data == "support")
+async def support(callback: CallbackQuery):
     await callback.answer()
 
     await callback.message.edit_text(
-        "➕ Добавление дохода\n\n"
-        "Отправь сообщение в формате:\n\n"
-        "50000 зарплата\n\n"
-        "Сначала укажи сумму, затем комментарий.",
-        reply_markup=back_keyboard()
+        "💬 <b>Поддержка MinPay</b>\n\n"
+        "Если возникла проблема с заказом или оплатой — "
+        "обратись к администратору.",
+        parse_mode="HTML",
+        reply_markup=back_menu(),
     )
 
 
-# =========================================================
-# ДОБАВЛЕНИЕ РАСХОДА
-# =========================================================
+@dp.message(F.text == "/admin")
+async def admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Доступ запрещён.")
+        return
 
-@dp.callback_query(F.data == "expense")
-async def expense_start(callback: CallbackQuery):
+    await message.answer(
+        "🔐 <b>MinPay — админ-панель</b>",
+        parse_mode="HTML",
+        reply_markup=admin_menu(),
+    )
+
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def admin_callbacks(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer(
+            "Доступ запрещён.",
+            show_alert=True,
+        )
+        return
+
     await callback.answer()
 
-    await callback.message.edit_text(
-        "➖ Добавление расхода\n\n"
-        "Отправь сообщение в формате:\n\n"
-        "1500 продукты\n\n"
-        "Сначала укажи сумму, затем комментарий.",
-        reply_markup=back_keyboard()
-    )
+    if callback.data == "admin_add_virtuals":
+        user_states[callback.from_user.id] = "add_virtuals"
 
+        await callback.message.edit_text(
+            "➕ <b>Добавление виртов</b>\n\n"
+            "Формат:\n\n"
+            "<code>50 млн виртов | 2500 | Быстрая выдача</code>\n\n"
+            "Можно добавлять пакеты вплоть до 200 млн.",
+            parse_mode="HTML",
+            reply_markup=back_menu(),
+        )
 
-# =========================================================
-# ОБРАБОТКА СУММ
-# =========================================================
+    elif callback.data == "admin_add_account":
+        user_states[callback.from_user.id] = "add_account"
+
+        await callback.message.edit_text(
+            "🎮 <b>Добавление аккаунта</b>\n\n"
+            "Формат:\n\n"
+            "<code>Название | Цена | Описание | Данные аккаунта</code>",
+            parse_mode="HTML",
+            reply_markup=back_menu(),
+        )
+
+    elif callback.data == "admin_products":
+        products = get_products()
+
+        if not products:
+            text = "📦 Товаров пока нет."
+        else:
+            text = "📦 <b>Товары</b>\n\n"
+
+            for product in products:
+                text += (
+                    f"#{product['id']} — {product['title']}\n"
+                    f"💰 {product['price']:,.0f} ₽\n\n"
+                )
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=admin_menu(),
+        )
+
+    elif callback.data == "admin_orders":
+        rows = get_all_orders()
+
+        if not rows:
+            text = "📋 Заказов пока нет."
+        else:
+            text = "📋 <b>Последние заказы</b>\n\n"
+
+            for row in rows:
+                text += (
+                    f"🧾 #{row['id']} — {row['title']}\n"
+                    f"👤 {row['user_id']}\n"
+                    f"💰 {row['price']:,.0f} ₽\n"
+                    f"🏦 {row['payment_method']}\n"
+                    f"📌 {row['status']}\n\n"
+                )
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=admin_menu(),
+        )
+
 
 @dp.message(F.text)
-async def process_transaction(message: Message):
-    text = message.text.strip()
-
-    parts = text.split(maxsplit=1)
-
-    if not parts:
+async def admin_product_input(message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
 
-    try:
-        amount = float(
-            parts[0]
-            .replace(",", ".")
-            .replace("₽", "")
-            .replace("р", "")
-            .strip()
+    state = user_states.get(message.from_user.id)
+
+    if state == "add_virtuals":
+        parts = [x.strip() for x in message.text.split("|")]
+
+        if len(parts) < 3:
+            await message.answer(
+                "❌ Нужно:\n\n"
+                "Название | Цена | Описание"
+            )
+            return
+
+        title = parts[0]
+
+        try:
+            price = float(
+                parts[1]
+                .replace(",", ".")
+                .replace("₽", "")
+                .strip()
+            )
+        except ValueError:
+            await message.answer("❌ Неверная цена.")
+            return
+
+        description = parts[2]
+
+        product_id = add_product(
+            "virtuals",
+            title,
+            description,
+            price,
         )
-    except ValueError:
-        return
 
-    if amount <= 0:
-        await message.answer(
-            "❌ Сумма должна быть больше нуля.",
-            reply_markup=main_keyboard()
-        )
-        return
-
-    comment = parts[1] if len(parts) > 1 else "Без комментария"
-
-    # Если перед этим пользователь нажал кнопку,
-    # Telegram не хранит состояние автоматически.
-    # Поэтому используем простое временное состояние.
-    user_id = message.from_user.id
-
-    state = user_states.get(user_id)
-
-    if state == "income":
-        new_balance = change_balance(
-            user_id,
-            amount,
-            "income",
-            comment
-        )
+        user_states.pop(message.from_user.id, None)
 
         await message.answer(
-            "✅ Доход добавлен\n\n"
-            f"💵 Сумма: +{amount:,.2f} ₽\n"
-            f"📝 Комментарий: {comment}\n\n"
-            f"💰 Новый баланс: {new_balance:,.2f} ₽",
-            reply_markup=main_keyboard()
+            f"✅ Вирты добавлены.\n\n"
+            f"🧾 ID: #{product_id}\n"
+            f"🪙 {title}\n"
+            f"💰 {price:,.0f} ₽",
+            reply_markup=admin_menu(),
         )
 
-        user_states.pop(user_id, None)
+    elif state == "add_account":
+        parts = [x.strip() for x in message.text.split("|")]
 
-    elif state == "expense":
-        new_balance = change_balance(
-            user_id,
-            amount,
-            "expense",
-            comment
+        if len(parts) < 4:
+            await message.answer(
+                "❌ Нужно:\n\n"
+                "Название | Цена | Описание | Данные аккаунта"
+            )
+            return
+
+        title = parts[0]
+
+        try:
+            price = float(
+                parts[1]
+                .replace(",", ".")
+                .replace("₽", "")
+                .strip()
+            )
+        except ValueError:
+            await message.answer("❌ Неверная цена.")
+            return
+
+        description = parts[2]
+        stock = parts[3]
+
+        product_id = add_product(
+            "accounts",
+            title,
+            description,
+            price,
+            stock,
         )
+
+        user_states.pop(message.from_user.id, None)
 
         await message.answer(
-            "✅ Расход добавлен\n\n"
-            f"💸 Сумма: -{amount:,.2f} ₽\n"
-            f"📝 Комментарий: {comment}\n\n"
-            f"💰 Новый баланс: {new_balance:,.2f} ₽",
-            reply_markup=main_keyboard()
+            f"✅ Аккаунт добавлен.\n\n"
+            f"🧾 ID: #{product_id}\n"
+            f"🎮 {title}\n"
+            f"💰 {price:,.0f} ₽",
+            reply_markup=admin_menu(),
         )
 
-        user_states.pop(user_id, None)
 
-
-# =========================================================
-# СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ
-# =========================================================
-
-user_states = {}
-
-
-# =========================================================
-# ПЕРЕОПРЕДЕЛЯЕМ КНОПКИ ДОХОДА И РАСХОДА
-# =========================================================
-
-@dp.callback_query(F.data == "income")
-async def income_handler(callback: CallbackQuery):
-    await callback.answer()
-
-    user_states[callback.from_user.id] = "income"
-
-    await callback.message.edit_text(
-        "➕ Новый доход\n\n"
-        "Напиши сумму и описание.\n\n"
-        "Например:\n"
-        "50000 зарплата\n\n"
-        "Или:\n"
-        "3000 подработка",
-        reply_markup=back_keyboard()
-    )
-
-
-@dp.callback_query(F.data == "expense")
-async def expense_handler(callback: CallbackQuery):
-    await callback.answer()
-
-    user_states[callback.from_user.id] = "expense"
-
-    await callback.message.edit_text(
-        "➖ Новый расход\n\n"
-        "Напиши сумму и описание.\n\n"
-        "Например:\n"
-        "1500 продукты\n\n"
-        "Или:\n"
-        "2500 одежда",
-        reply_markup=back_keyboard()
-    )
-
-
-# =========================================================
-# ИСТОРИЯ
-# =========================================================
-
-@dp.callback_query(F.data == "history")
-async def history(callback: CallbackQuery):
-    await callback.answer()
-
-    user_id = callback.from_user.id
-
-    cursor.execute(
-        """
-        SELECT amount, type, comment, created_at
-        FROM transactions
-        WHERE user_id = ?
-        ORDER BY id DESC
-        LIMIT 15
-        """,
-        (user_id,)
-    )
-
-    transactions = cursor.fetchall()
-
-    if not transactions:
-        await callback.message.edit_text(
-            "📜 История пока пустая.\n\n"
-            "Добавь первую операцию.",
-            reply_markup=back_keyboard()
-        )
-        return
-
-    lines = ["📜 Последние операции\n"]
-
-    for amount, transaction_type, comment, created_at in transactions:
-
-        if transaction_type == "income":
-            icon = "🟢"
-            sign = "+"
-        else:
-            icon = "🔴"
-            sign = "-"
-
-        lines.append(
-            f"{icon} {sign}{amount:,.2f} ₽\n"
-            f"   📝 {comment}\n"
-            f"   🕐 {created_at}\n"
-        )
-
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=back_keyboard()
-    )
-
-
-# =========================================================
-# ЗАПУСК
-# =========================================================
-
-async def main():
-    print("Бот запущен.")
-
-    await dp.start_polling(
-        bot,
-        allowed_updates=dp.resolve_used_update_types()
-    )
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
 async def run_bot():
+    init_db()
+
+    print("MinPay запущен.")
+
     await dp.start_polling(
         bot,
-        allowed_updates=dp.resolve_used_update_types()
+        allowed_updates=dp.resolve_used_update_types(),
     )
