@@ -1,13 +1,15 @@
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command
 from aiogram.types import (
     Message,
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
-from .config import BOT_TOKEN, ADMIN_ID
+from .config import BOT_TOKEN, ADMIN_IDS
 from .db import (
     init_db,
     add_product,
@@ -16,641 +18,648 @@ from .db import (
     create_order,
     get_user_orders,
     get_all_orders,
+    delete_product,
 )
 
-bot = Bot(BOT_TOKEN)
+
 dp = Dispatcher()
 
-user_states = {}
 
+# =========================
+# КЛАВИАТУРЫ
+# =========================
 
-def main_menu():
+def main_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="🪙 Купить вирты",
-                    callback_data="virtuals",
-                )
-            ],
-            [
+                    callback_data="category:virts"
+                ),
                 InlineKeyboardButton(
-                    text="🎮 Аккаунты",
-                    callback_data="accounts",
-                )
+                    text="🎮 Купить аккаунт",
+                    callback_data="category:accounts"
+                ),
             ],
             [
                 InlineKeyboardButton(
                     text="📦 Мои заказы",
-                    callback_data="orders",
-                )
-            ],
-            [
+                    callback_data="my_orders"
+                ),
                 InlineKeyboardButton(
                     text="💬 Поддержка",
-                    callback_data="support",
-                )
+                    callback_data="support"
+                ),
             ],
         ]
     )
 
 
-def back_menu():
+def back_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="◀️ Назад",
-                    callback_data="menu",
+                    text="◀️ Главное меню",
+                    callback_data="main"
                 )
             ]
         ]
     )
 
 
-def admin_menu():
+def admin_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="➕ Добавить вирты",
-                    callback_data="admin_add_virtuals",
+                    callback_data="admin_add:virts"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🎮 Добавить аккаунт",
-                    callback_data="admin_add_account",
+                    text="➕ Добавить аккаунт",
+                    callback_data="admin_add:accounts"
                 )
             ],
             [
                 InlineKeyboardButton(
                     text="📦 Товары",
-                    callback_data="admin_products",
+                    callback_data="admin_products"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📋 Заказы",
-                    callback_data="admin_orders",
+                    text="🧾 Заказы",
+                    callback_data="admin_orders"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="◀️ В магазин",
-                    callback_data="menu",
+                    text="◀️ Главное меню",
+                    callback_data="main"
                 )
             ],
         ]
     )
 
 
-@dp.message(CommandStart())
-async def start(message: Message):
+# =========================
+# ВРЕМЕННОЕ СОСТОЯНИЕ АДМИНА
+# =========================
+
+admin_states = {}
+
+
+# =========================
+# START
+# =========================
+
+@dp.message(Command("start"))
+async def start_handler(message: Message):
     text = (
-        "💎 <b>MinPay</b>\n\n"
-        "Магазин игровых виртов и аккаунтов.\n\n"
-        "🪙 Вирты — пакеты до 200 млн\n"
-        "🎮 Аккаунты — товары из наличия\n"
-        "🔐 Быстрое оформление заказа\n\n"
-        "Выбери нужный раздел:"
+        "👋 <b>Добро пожаловать в MinPay!</b>\n\n"
+        "🛒 Магазин игровых товаров\n\n"
+        "Здесь можно приобрести:\n"
+        "• 🪙 игровую валюту\n"
+        "• 🎮 игровые аккаунты\n\n"
+        "Выбирай нужный раздел ниже 👇"
     )
 
     await message.answer(
         text,
-        parse_mode="HTML",
-        reply_markup=main_menu(),
+        reply_markup=main_keyboard()
     )
 
 
-@dp.callback_query(F.data == "menu")
-async def menu(callback: CallbackQuery):
-    await callback.answer()
+# =========================
+# ГЛАВНОЕ МЕНЮ
+# =========================
 
+@dp.callback_query(F.data == "main")
+async def main_menu(callback: CallbackQuery):
     await callback.message.edit_text(
-        "💎 <b>MinPay</b>\n\nВыбери нужный раздел:",
-        parse_mode="HTML",
-        reply_markup=main_menu(),
+        "👋 <b>MinPay</b>\n\n"
+        "🛒 Магазин игровых товаров\n\n"
+        "Выбирай нужный раздел 👇",
+        reply_markup=main_keyboard()
     )
 
-
-@dp.callback_query(F.data == "virtuals")
-async def virtuals(callback: CallbackQuery):
     await callback.answer()
 
-    products = get_products("virtuals")
+
+# =========================
+# КАТЕГОРИИ
+# =========================
+
+@dp.callback_query(F.data.startswith("category:"))
+async def category_handler(callback: CallbackQuery):
+    category = callback.data.split(":", 1)[1]
+
+    products = get_products(category)
+
+    if category == "virts":
+        title = "🪙 <b>Продажа виртов</b>"
+    else:
+        title = "🎮 <b>Продажа аккаунтов</b>"
 
     if not products:
         await callback.message.edit_text(
-            "🪙 <b>Вирты</b>\n\n"
-            "Сейчас товаров в наличии нет.",
-            parse_mode="HTML",
-            reply_markup=back_menu(),
+            f"{title}\n\n"
+            "😔 Сейчас товаров в этом разделе нет.",
+            reply_markup=back_keyboard()
         )
+        await callback.answer()
         return
 
     buttons = []
 
     for product in products:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=f"🪙 {product['title']} — {product['price']:,.0f} ₽",
-                    callback_data=f"product:{product['id']}",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
+        buttons.append([
             InlineKeyboardButton(
-                text="◀️ Назад",
-                callback_data="menu",
+                text=f"{product['name']} — {product['price']:.0f} ₽",
+                callback_data=f"product:{product['id']}"
             )
-        ]
-    )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="main"
+        )
+    ])
 
     await callback.message.edit_text(
-        "🪙 <b>Вирты</b>\n\n"
-        "Выбери пакет:",
-        parse_mode="HTML",
+        title + "\n\nВыбери товар:",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=buttons
-        ),
+        )
     )
 
-
-@dp.callback_query(F.data == "accounts")
-async def accounts(callback: CallbackQuery):
     await callback.answer()
 
-    products = get_products("accounts")
 
-    if not products:
-        await callback.message.edit_text(
-            "🎮 <b>Аккаунты</b>\n\n"
-            "Сейчас аккаунтов в наличии нет.",
-            parse_mode="HTML",
-            reply_markup=back_menu(),
-        )
-        return
-
-    buttons = []
-
-    for product in products:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=f"🎮 {product['title']} — {product['price']:,.0f} ₽",
-                    callback_data=f"product:{product['id']}",
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                text="◀️ Назад",
-                callback_data="menu",
-            )
-        ]
-    )
-
-    await callback.message.edit_text(
-        "🎮 <b>Аккаунты</b>\n\n"
-        "Выбери аккаунт:",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=buttons
-        ),
-    )
-
+# =========================
+# ТОВАР
+# =========================
 
 @dp.callback_query(F.data.startswith("product:"))
-async def product_page(callback: CallbackQuery):
-    await callback.answer()
+async def product_handler(callback: CallbackQuery):
+    product_id = int(callback.data.split(":", 1)[1])
 
-    product_id = int(callback.data.split(":")[1])
-    product = get_product(product_id)
-
-    if not product or not product["active"]:
-        await callback.message.edit_text(
-            "❌ Товар больше недоступен.",
-            reply_markup=back_menu(),
-        )
-        return
-
-    description = product["description"] or "Описание отсутствует."
-
-    text = (
-        f"<b>{product['title']}</b>\n\n"
-        f"{description}\n\n"
-        f"💰 Цена: <b>{product['price']:,.0f} ₽</b>\n"
-        "📦 В наличии"
-    )
-
-    category = product["category"]
-
-    await callback.message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="💳 Выбрать оплату",
-                        callback_data=f"pay:{product_id}",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="◀️ Назад",
-                        callback_data=category,
-                    )
-                ],
-            ]
-        ),
-    )
-
-
-@dp.callback_query(F.data.startswith("pay:"))
-async def payment_methods(callback: CallbackQuery):
-    await callback.answer()
-
-    product_id = int(callback.data.split(":")[1])
     product = get_product(product_id)
 
     if not product:
+        await callback.answer(
+            "Товар не найден",
+            show_alert=True
+        )
+        return
+
+    category_name = (
+        "🪙 Вирты"
+        if product["category"] == "virts"
+        else "🎮 Аккаунт"
+    )
+
+    text = (
+        f"{category_name}\n\n"
+        f"<b>{product['name']}</b>\n\n"
+        f"{product['description']}\n\n"
+        f"💰 Цена: <b>{product['price']:.0f} ₽</b>"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💳 Купить",
+                    callback_data=f"buy:{product_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data=f"category:{product['category']}"
+                )
+            ]
+        ]
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard
+    )
+
+    await callback.answer()
+
+
+# =========================
+# ПОКУПКА
+# =========================
+
+@dp.callback_query(F.data.startswith("buy:"))
+async def buy_handler(callback: CallbackQuery):
+    product_id = int(callback.data.split(":", 1)[1])
+
+    product = get_product(product_id)
+
+    if not product:
+        await callback.answer(
+            "Товар не найден",
+            show_alert=True
+        )
         return
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🟢 Сбер",
-                    callback_data=f"bank:Сбер:{product_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🔵 Т-Банк",
-                    callback_data=f"bank:Т-Банк:{product_id}",
-                ),
+                    text="🏦 Сбер",
+                    callback_data=f"pay:{product_id}:Сбер"
+                )
             ],
             [
                 InlineKeyboardButton(
-                    text="🔴 Альфа-Банк",
-                    callback_data=f"bank:Альфа-Банк:{product_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🔵 ВТБ",
-                    callback_data=f"bank:ВТБ:{product_id}",
-                ),
+                    text="💳 Т-Банк",
+                    callback_data=f"pay:{product_id}:Т-Банк"
+                )
             ],
             [
                 InlineKeyboardButton(
-                    text="🟠 Газпромбанк",
-                    callback_data=f"bank:Газпромбанк:{product_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🟡 Совкомбанк",
-                    callback_data=f"bank:Совкомбанк:{product_id}",
-                ),
+                    text="🏦 Альфа-Банк",
+                    callback_data=f"pay:{product_id}:Альфа-Банк"
+                )
             ],
             [
                 InlineKeyboardButton(
-                    text="🔵 МТС Банк",
-                    callback_data=f"bank:МТС Банк:{product_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🟣 Райффайзен",
-                    callback_data=f"bank:Райффайзенбанк:{product_id}",
-                ),
+                    text="🏦 ВТБ",
+                    callback_data=f"pay:{product_id}:ВТБ"
+                )
             ],
             [
                 InlineKeyboardButton(
-                    text="🟢 Ак Барс",
-                    callback_data=f"bank:Ак Барс Банк:{product_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🟠 Уралсиб",
-                    callback_data=f"bank:Уралсиб:{product_id}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🟠 ОТП Банк",
-                    callback_data=f"bank:ОТП Банк:{product_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🟢 СБП",
-                    callback_data=f"bank:СБП:{product_id}",
-                ),
+                    text="⚡ СБП",
+                    callback_data=f"pay:{product_id}:СБП"
+                )
             ],
             [
                 InlineKeyboardButton(
                     text="◀️ Назад",
-                    callback_data=f"product:{product_id}",
+                    callback_data=f"product:{product_id}"
                 )
-            ],
+            ]
         ]
     )
 
     await callback.message.edit_text(
-        "💳 <b>Выбор оплаты</b>\n\n"
-        f"🛒 {product['title']}\n"
-        f"💰 {product['price']:,.0f} ₽\n\n"
-        "Выбери удобный способ:",
-        parse_mode="HTML",
-        reply_markup=keyboard,
+        f"💳 <b>Оплата заказа</b>\n\n"
+        f"Товар: <b>{product['name']}</b>\n"
+        f"Сумма: <b>{product['price']:.0f} ₽</b>\n\n"
+        "Выбери способ оплаты:",
+        reply_markup=keyboard
     )
 
-
-@dp.callback_query(F.data.startswith("bank:"))
-async def bank_selected(callback: CallbackQuery):
     await callback.answer()
 
-    _, bank, product_id = callback.data.split(":", 2)
 
-    product = get_product(int(product_id))
+# =========================
+# СОЗДАНИЕ ЗАКАЗА
+# =========================
+
+@dp.callback_query(F.data.startswith("pay:"))
+async def payment_handler(callback: CallbackQuery):
+    parts = callback.data.split(":", 2)
+
+    product_id = int(parts[1])
+    payment_method = parts[2]
+
+    product = get_product(product_id)
 
     if not product:
+        await callback.answer(
+            "Товар не найден",
+            show_alert=True
+        )
         return
 
     order_id = create_order(
-        callback.from_user.id,
-        product["id"],
-        product["price"],
-        bank,
+        user_id=callback.from_user.id,
+        product_id=product_id,
+        payment_method=payment_method
     )
 
-    await callback.message.edit_text(
-        "💳 <b>Заказ создан</b>\n\n"
-        f"🧾 Заказ: <b>#{order_id}</b>\n"
-        f"🛒 {product['title']}\n"
-        f"💰 {product['price']:,.0f} ₽\n"
-        f"🏦 {bank}\n\n"
-        "Для оплаты используй официальный сайт или приложение "
-        "выбранного банка.\n\n"
-        "⚠️ MinPay никогда не запрашивает пароль, SMS-код "
-        "или данные карты.",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="📦 Мои заказы",
-                        callback_data="orders",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="◀️ В магазин",
-                        callback_data="menu",
-                    )
-                ],
-            ]
-        ),
+    text = (
+        "🧾 <b>Заказ создан</b>\n\n"
+        f"Номер заказа: <b>#{order_id}</b>\n"
+        f"Товар: <b>{product['name']}</b>\n"
+        f"Сумма: <b>{product['price']:.0f} ₽</b>\n"
+        f"Оплата: <b>{payment_method}</b>\n\n"
+        "💳 Для оплаты используй приложение или официальный сайт выбранного банка.\n\n"
+        "После оплаты обратись в поддержку и укажи номер заказа."
     )
-
-
-@dp.callback_query(F.data == "orders")
-async def orders(callback: CallbackQuery):
-    await callback.answer()
-
-    rows = get_user_orders(callback.from_user.id)
-
-    if not rows:
-        await callback.message.edit_text(
-            "📦 <b>Мои заказы</b>\n\n"
-            "У тебя пока нет заказов.",
-            parse_mode="HTML",
-            reply_markup=back_menu(),
-        )
-        return
-
-    text = "📦 <b>Мои заказы</b>\n\n"
-
-    for row in rows:
-        text += (
-            f"🧾 <b>#{row['id']}</b>\n"
-            f"🛒 {row['title']}\n"
-            f"💰 {row['price']:,.0f} ₽\n"
-            f"🏦 {row['payment_method']}\n"
-            f"📌 {row['status']}\n"
-            f"🕐 {row['created_at']}\n\n"
-        )
 
     await callback.message.edit_text(
         text,
-        parse_mode="HTML",
-        reply_markup=back_menu(),
+        reply_markup=back_keyboard()
     )
 
+    await callback.answer("Заказ создан")
 
-@dp.callback_query(F.data == "support")
-async def support(callback: CallbackQuery):
-    await callback.answer()
+
+# =========================
+# МОИ ЗАКАЗЫ
+# =========================
+
+@dp.callback_query(F.data == "my_orders")
+async def my_orders_handler(callback: CallbackQuery):
+    orders = get_user_orders(callback.from_user.id)
+
+    if not orders:
+        await callback.message.edit_text(
+            "📦 <b>Мои заказы</b>\n\n"
+            "У тебя пока нет заказов.",
+            reply_markup=back_keyboard()
+        )
+
+        await callback.answer()
+        return
+
+    lines = ["📦 <b>Мои заказы</b>\n"]
+
+    for order in orders[:20]:
+        lines.append(
+            f"🧾 #{order['id']} — {order['name']}\n"
+            f"💰 {order['price']:.0f} ₽\n"
+            f"💳 {order['payment_method']}\n"
+            f"📌 Статус: {order['status']}\n"
+        )
 
     await callback.message.edit_text(
-        "💬 <b>Поддержка MinPay</b>\n\n"
-        "Если возникла проблема с заказом или оплатой — "
-        "обратись к администратору.",
-        parse_mode="HTML",
-        reply_markup=back_menu(),
+        "\n".join(lines),
+        reply_markup=back_keyboard()
     )
 
+    await callback.answer()
 
-@dp.message(F.text == "/admin")
-async def admin(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещён.")
+
+# =========================
+# ПОДДЕРЖКА
+# =========================
+
+@dp.callback_query(F.data == "support")
+async def support_handler(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "💬 <b>Поддержка</b>\n\n"
+        "Если возникла проблема с заказом, "
+        "напиши администратору и укажи номер заказа.",
+        reply_markup=back_keyboard()
+    )
+
+    await callback.answer()
+
+
+# =========================
+# ADMIN
+# =========================
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+@dp.message(Command("admin"))
+async def admin_handler(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer(
+            "⛔ У тебя нет доступа к админ-панели."
+        )
         return
 
     await message.answer(
-        "🔐 <b>MinPay — админ-панель</b>",
-        parse_mode="HTML",
-        reply_markup=admin_menu(),
+        "🛠 <b>Админ-панель MinPay</b>\n\n"
+        "Выбери действие:",
+        reply_markup=admin_keyboard()
     )
 
 
-@dp.callback_query(F.data.startswith("admin_"))
-async def admin_callbacks(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+# =========================
+# ADMIN ADD
+# =========================
+
+@dp.callback_query(F.data.startswith("admin_add:"))
+async def admin_add_start(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
         await callback.answer(
-            "Доступ запрещён.",
-            show_alert=True,
+            "Нет доступа",
+            show_alert=True
         )
         return
+
+    category = callback.data.split(":", 1)[1]
+
+    admin_states[callback.from_user.id] = {
+        "step": "name",
+        "category": category
+    }
+
+    await callback.message.edit_text(
+        "➕ <b>Добавление товара</b>\n\n"
+        "Напиши название товара:"
+    )
 
     await callback.answer()
 
-    if callback.data == "admin_add_virtuals":
-        user_states[callback.from_user.id] = "add_virtuals"
 
-        await callback.message.edit_text(
-            "➕ <b>Добавление виртов</b>\n\n"
-            "Формат:\n\n"
-            "<code>50 млн виртов | 2500 | Быстрая выдача</code>\n\n"
-            "Можно добавлять пакеты вплоть до 200 млн.",
-            parse_mode="HTML",
-            reply_markup=back_menu(),
-        )
+@dp.message()
+async def admin_message_handler(message: Message):
+    user_id = message.from_user.id
 
-    elif callback.data == "admin_add_account":
-        user_states[callback.from_user.id] = "add_account"
-
-        await callback.message.edit_text(
-            "🎮 <b>Добавление аккаунта</b>\n\n"
-            "Формат:\n\n"
-            "<code>Название | Цена | Описание | Данные аккаунта</code>",
-            parse_mode="HTML",
-            reply_markup=back_menu(),
-        )
-
-    elif callback.data == "admin_products":
-        products = get_products()
-
-        if not products:
-            text = "📦 Товаров пока нет."
-        else:
-            text = "📦 <b>Товары</b>\n\n"
-
-            for product in products:
-                text += (
-                    f"#{product['id']} — {product['title']}\n"
-                    f"💰 {product['price']:,.0f} ₽\n\n"
-                )
-
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=admin_menu(),
-        )
-
-    elif callback.data == "admin_orders":
-        rows = get_all_orders()
-
-        if not rows:
-            text = "📋 Заказов пока нет."
-        else:
-            text = "📋 <b>Последние заказы</b>\n\n"
-
-            for row in rows:
-                text += (
-                    f"🧾 #{row['id']} — {row['title']}\n"
-                    f"👤 {row['user_id']}\n"
-                    f"💰 {row['price']:,.0f} ₽\n"
-                    f"🏦 {row['payment_method']}\n"
-                    f"📌 {row['status']}\n\n"
-                )
-
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=admin_menu(),
-        )
-
-
-@dp.message(F.text)
-async def admin_product_input(message: Message):
-    if user_id not in ADMIN_IDS:
+    if not is_admin(user_id):
         return
-        
 
-    state = user_states.get(message.from_user.id)
+    if user_id not in admin_states:
+        return
 
-    if state == "add_virtuals":
-        parts = [x.strip() for x in message.text.split("|")]
+    state = admin_states[user_id]
+    step = state["step"]
 
-        if len(parts) < 3:
-            await message.answer(
-                "❌ Нужно:\n\n"
-                "Название | Цена | Описание"
-            )
-            return
-
-        title = parts[0]
-
-        try:
-            price = float(
-                parts[1]
-                .replace(",", ".")
-                .replace("₽", "")
-                .strip()
-            )
-        except ValueError:
-            await message.answer("❌ Неверная цена.")
-            return
-
-        description = parts[2]
-
-        product_id = add_product(
-            "virtuals",
-            title,
-            description,
-            price,
-        )
-
-        user_states.pop(message.from_user.id, None)
+    if step == "name":
+        state["name"] = message.text
+        state["step"] = "description"
 
         await message.answer(
-            f"✅ Вирты добавлены.\n\n"
-            f"🧾 ID: #{product_id}\n"
-            f"🪙 {title}\n"
-            f"💰 {price:,.0f} ₽",
-            reply_markup=admin_menu(),
+            "📝 Теперь напиши описание товара:"
         )
 
-    elif state == "add_account":
-        parts = [x.strip() for x in message.text.split("|")]
+    elif step == "description":
+        state["description"] = message.text
+        state["step"] = "price"
 
-        if len(parts) < 4:
-            await message.answer(
-                "❌ Нужно:\n\n"
-                "Название | Цена | Описание | Данные аккаунта"
-            )
-            return
+        await message.answer(
+            "💰 Напиши цену в рублях:\n\n"
+            "Например: 500"
+        )
 
-        title = parts[0]
-
+    elif step == "price":
         try:
-            price = float(
-                parts[1]
-                .replace(",", ".")
-                .replace("₽", "")
-                .strip()
-            )
+            price = float(message.text.replace(",", "."))
         except ValueError:
-            await message.answer("❌ Неверная цена.")
+            await message.answer(
+                "❌ Цена должна быть числом."
+            )
             return
 
-        description = parts[2]
-        stock = parts[3]
+        state["price"] = price
 
+        if state["category"] == "accounts":
+            state["step"] = "stock"
+
+            await message.answer(
+                "🎮 Отправь данные аккаунта.\n\n"
+                "Эти данные будут сохранены как содержимое товара."
+            )
+        else:
+            product_id = add_product(
+                category=state["category"],
+                name=state["name"],
+                description=state["description"],
+                price=state["price"],
+            )
+
+            del admin_states[user_id]
+
+            await message.answer(
+                f"✅ Вирты добавлены.\n\n"
+                f"ID товара: <b>#{product_id}</b>"
+            )
+
+    elif step == "stock":
         product_id = add_product(
-            "accounts",
-            title,
-            description,
-            price,
-            stock,
+            category=state["category"],
+            name=state["name"],
+            description=state["description"],
+            price=state["price"],
+            stock=message.text
         )
 
-        user_states.pop(message.from_user.id, None)
+        del admin_states[user_id]
 
         await message.answer(
             f"✅ Аккаунт добавлен.\n\n"
-            f"🧾 ID: #{product_id}\n"
-            f"🎮 {title}\n"
-            f"💰 {price:,.0f} ₽",
-            reply_markup=admin_menu(),
+            f"ID товара: <b>#{product_id}</b>"
         )
 
-#dd
+
+# =========================
+# ADMIN PRODUCTS
+# =========================
+
+@dp.callback_query(F.data == "admin_products")
+async def admin_products_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа",
+            show_alert=True
+        )
+        return
+
+    virts = get_products("virts")
+    accounts = get_products("accounts")
+
+    lines = ["📦 <b>Товары</b>\n"]
+
+    if virts:
+        lines.append("🪙 <b>Вирты:</b>")
+
+        for product in virts:
+            lines.append(
+                f"#{product['id']} — {product['name']} — "
+                f"{product['price']:.0f} ₽"
+            )
+
+    if accounts:
+        lines.append("\n🎮 <b>Аккаунты:</b>")
+
+        for product in accounts:
+            lines.append(
+                f"#{product['id']} — {product['name']} — "
+                f"{product['price']:.0f} ₽"
+            )
+
+    if not virts and not accounts:
+        lines.append("Товаров пока нет.")
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=back_keyboard()
+    )
+
+    await callback.answer()
+
+
+# =========================
+# ADMIN ORDERS
+# =========================
+
+@dp.callback_query(F.data == "admin_orders")
+async def admin_orders_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа",
+            show_alert=True
+        )
+        return
+
+    orders = get_all_orders()
+
+    if not orders:
+        await callback.message.edit_text(
+            "🧾 <b>Заказы</b>\n\n"
+            "Заказов пока нет.",
+            reply_markup=back_keyboard()
+        )
+
+        await callback.answer()
+        return
+
+    lines = ["🧾 <b>Последние заказы</b>\n"]
+
+    for order in orders[:30]:
+        lines.append(
+            f"#{order['id']} — {order['name']}\n"
+            f"👤 {order['user_id']}\n"
+            f"💰 {order['price']:.0f} ₽\n"
+            f"💳 {order['payment_method']}\n"
+            f"📌 {order['status']}\n"
+        )
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=back_keyboard()
+    )
+
+    await callback.answer()
+
+
+# =========================
+# RUN
+# =========================
+
 async def run_bot():
     init_db()
 
-    print("MinPay запущен.")
-
-    await dp.start_polling(
-        bot,
-        allowed_updates=dp.resolve_used_update_types(),
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(
+            parse_mode=ParseMode.HTML
+        )
     )
+
+    print("MinPay запущен")
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
