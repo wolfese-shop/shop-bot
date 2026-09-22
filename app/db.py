@@ -1,152 +1,189 @@
 import sqlite3
-from datetime import datetime
+from pathlib import Path
 
-DB_NAME = "minpay.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "vulfis.db"
 
-db = sqlite3.connect(DB_NAME, check_same_thread=False)
-db.row_factory = sqlite3.Row
+
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def init_db():
-    db.execute("""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER UNIQUE NOT NULL,
+            username TEXT,
+            first_name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT NOT NULL,
-            title TEXT NOT NULL,
+            name TEXT NOT NULL,
             description TEXT DEFAULT '',
             price REAL NOT NULL,
             stock TEXT DEFAULT '',
             active INTEGER DEFAULT 1,
-            created_at TEXT NOT NULL
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    db.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             product_id INTEGER NOT NULL,
-            price REAL NOT NULL,
             payment_method TEXT NOT NULL,
             status TEXT DEFAULT 'Ожидает оплаты',
-            created_at TEXT NOT NULL
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    db.commit()
+    conn.commit()
+    conn.close()
 
 
-def add_product(category, title, description, price, stock=""):
-    cur = db.execute(
-        """
+def save_user(telegram_id, username, first_name):
+    conn = get_connection()
+
+    conn.execute("""
+        INSERT INTO users (telegram_id, username, first_name)
+        VALUES (?, ?, ?)
+        ON CONFLICT(telegram_id) DO UPDATE SET
+            username = excluded.username,
+            first_name = excluded.first_name
+    """, (telegram_id, username, first_name))
+
+    conn.commit()
+    conn.close()
+
+
+def add_product(category, name, description, price, stock):
+    conn = get_connection()
+
+    cur = conn.execute("""
         INSERT INTO products
-        (category, title, description, price, stock, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            category,
-            title,
-            description,
-            price,
-            stock,
-            datetime.now().strftime("%d.%m.%Y %H:%M"),
-        ),
-    )
+        (category, name, description, price, stock)
+        VALUES (?, ?, ?, ?, ?)
+    """, (category, name, description, price, stock))
 
-    db.commit()
-    return cur.lastrowid
+    product_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return product_id
 
 
-def get_products(category=None):
-    if category:
-        cur = db.execute(
-            """
-            SELECT *
-            FROM products
-            WHERE category = ? AND active = 1
-            ORDER BY id DESC
-            """,
-            (category,),
-        )
-    else:
-        cur = db.execute(
-            """
-            SELECT *
-            FROM products
-            WHERE active = 1
-            ORDER BY id DESC
-            """
-        )
+def get_products(category):
+    conn = get_connection()
 
-    return cur.fetchall()
+    rows = conn.execute("""
+        SELECT *
+        FROM products
+        WHERE category = ? AND active = 1
+        ORDER BY id DESC
+    """, (category,)).fetchall()
+
+    conn.close()
+    return rows
 
 
 def get_product(product_id):
-    cur = db.execute(
-        "SELECT * FROM products WHERE id = ?",
-        (product_id,),
-    )
-    return cur.fetchone()
+    conn = get_connection()
+
+    row = conn.execute("""
+        SELECT *
+        FROM products
+        WHERE id = ?
+    """, (product_id,)).fetchone()
+
+    conn.close()
+    return row
 
 
-def create_order(user_id, product_id, price, payment_method):
-    cur = db.execute(
-        """
+def create_order(user_id, product_id, payment_method):
+    conn = get_connection()
+
+    cur = conn.execute("""
         INSERT INTO orders
-        (user_id, product_id, price, payment_method, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            product_id,
-            price,
-            payment_method,
-            "Ожидает оплаты",
-            datetime.now().strftime("%d.%m.%Y %H:%M"),
-        ),
-    )
+        (user_id, product_id, payment_method)
+        VALUES (?, ?, ?)
+    """, (user_id, product_id, payment_method))
 
-    db.commit()
-    return cur.lastrowid
+    order_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return order_id
 
 
 def get_user_orders(user_id):
-    cur = db.execute(
-        """
+    conn = get_connection()
+
+    rows = conn.execute("""
         SELECT
             orders.*,
-            products.title
+            products.name AS product_name,
+            products.price AS product_price
         FROM orders
         JOIN products ON products.id = orders.product_id
         WHERE orders.user_id = ?
         ORDER BY orders.id DESC
-        LIMIT 20
-        """,
-        (user_id,),
-    )
+    """, (user_id,)).fetchall()
 
-    return cur.fetchall()
+    conn.close()
+    return rows
 
 
 def get_all_orders():
-    cur = db.execute(
-        """
+    conn = get_connection()
+
+    rows = conn.execute("""
         SELECT
             orders.*,
-            products.title
+            products.name AS product_name,
+            products.price AS product_price
         FROM orders
         JOIN products ON products.id = orders.product_id
         ORDER BY orders.id DESC
-        LIMIT 100
-        """
-    )
+    """).fetchall()
 
-    return cur.fetchall()
+    conn.close()
+    return rows
 
 
-def delete_product(product_id):
-    db.execute(
-        "UPDATE products SET active = 0 WHERE id = ?",
-        (product_id,),
-    )
-    db.commit()
+def get_all_products():
+    conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT *
+        FROM products
+        ORDER BY id DESC
+    """).fetchall()
+
+    conn.close()
+    return rows
+
+
+def deactivate_product(product_id):
+    conn = get_connection()
+
+    conn.execute("""
+        UPDATE products
+        SET active = 0
+        WHERE id = ?
+    """, (product_id,))
+
+    conn.commit()
+    conn.close()
