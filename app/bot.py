@@ -1,133 +1,508 @@
-from decimal import Decimal
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from sqlalchemy import select
-from .config import settings
-from .db import SessionLocal, User, Product, Order
-from .payments import YooKassaClient
-from .services import suspicious_order
-from .bank_analytics import bank_stats, method_stats
+import asyncio
+import os
+import sqlite3
+from datetime import datetime
 
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
+
+# =========================================================
+# НАСТРОЙКИ
+# =========================================================
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise RuntimeError("Не найден BOT_TOKEN. Добавь его в переменные окружения.")
+
+DB_NAME = "money_bot.db"
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-def products_keyboard(products):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🛒 {p.name} — {p.price} ₽", callback_data=f"product:{p.id}")]
-        for p in products
-    ])
 
-@dp.message(Command("start"))
-async def start(message: Message):
-    async with SessionLocal() as session:
-        user = await session.scalar(select(User).where(User.telegram_id == message.from_user.id))
-        if not user:
-            session.add(User(telegram_id=message.from_user.id, username=message.from_user.username))
-        products = (await session.execute(
-            select(Product).where(Product.active == True).order_by(Product.id)
-        )).scalars().all()
-        await session.commit()
-    await message.answer(
-        "🐺 <b>WOLFESE DISTRICT</b>\n\nВыбери товар:",
-        reply_markup=products_keyboard(products)
+# =========================================================
+# БАЗА ДАННЫХ
+# =========================================================
+
+db = sqlite3.connect(DB_NAME)
+cursor = db.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    balance REAL DEFAULT 0
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount REAL,
+    type TEXT,
+    comment TEXT,
+    created_at TEXT
+)
+""")
+
+db.commit()
+
+
+# =========================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# =========================================================
+
+def get_user(user_id: int):
+    cursor.execute(
+        "SELECT user_id, balance FROM users WHERE user_id = ?",
+        (user_id,)
     )
 
-@dp.callback_query(F.data.startswith("product:"))
-async def product(call: CallbackQuery):
-    product_id = int(call.data.split(":")[1])
-    async with SessionLocal() as session:
-        p = await session.get(Product, product_id)
-    if not p or not p.active:
-        await call.answer("Товар недоступен", show_alert=True)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 СБП", callback_data=f"buy:{p.id}:sbp")],
-        [InlineKeyboardButton(text="💳 Банковская карта", callback_data=f"buy:{p.id}:bank_card")]
-    ])
-    await call.message.answer(
-        f"🐺 <b>{p.name}</b>\n\n{p.description}\n\n💰 <b>{p.price} ₽</b>",
-        reply_markup=kb
-    )
-    await call.answer()
+    user = cursor.fetchone()
 
-@dp.callback_query(F.data.startswith("buy:"))
-async def buy(call: CallbackQuery):
-    _, product_id, method = call.data.split(":")
-    async with SessionLocal() as session:
-        p = await session.get(Product, int(product_id))
-        user = await session.scalar(select(User).where(User.telegram_id == call.from_user.id))
-        if not p or not user:
-            await call.answer("Ошибка", show_alert=True)
-            return
-        order = Order(
-            user_id=user.id,
-            product_id=p.id,
-            amount=Decimal(p.price),
-            status="WAITING_PAYMENT",
-            payment_method=method,
+    if not user:
+        cursor.execute(
+            "INSERT INTO users (user_id, balance) VALUES (?, ?)",
+            (user_id, 0)
         )
-        session.add(order)
-        await session.flush()
-        order.suspicious = await suspicious_order(session, order.amount)
-        await session.commit()
-        order_id = order.id
-        amount = p.price
+        db.commit()
+        return (user_id, 0)
+
+    return user
+
+
+def get_balance(user_id: int) -> float:
+    user = get_user(user_id)
+    return float(user[1])
+
+
+def change_balance(
+    user_id: int,
+    amount: float,
+    transaction_type: str,
+    comment: str
+):
+    get_user(user_id)
+
+    balance = get_balance(user_id)
+
+    if transaction_type == "expense":
+        new_balance = balance - amount
+    else:
+        new_balance = balance + amount
+
+    cursor.execute(
+        "UPDATE users SET balance = ? WHERE user_id = ?",
+        (new_balance, user_id)
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (user_id, amount, type, comment, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            amount,
+            transaction_type,
+            comment,
+            datetime.now().strftime("%d.%m.%Y %H:%M")
+        )
+    )
+
+    db.commit()
+
+    return new_balance
+
+
+def main_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💰 Баланс",
+                    callback_data="balance"
+                ),
+                InlineKeyboardButton(
+                    text="📊 Статистика",
+                    callback_data="stats"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="➕ Доход",
+                    callback_data="income"
+                ),
+                InlineKeyboardButton(
+                    text="➖ Расход",
+                    callback_data="expense"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📜 История",
+                    callback_data="history"
+                )
+            ]
+        ]
+    )
+
+
+def back_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data="menu"
+                )
+            ]
+        ]
+    )
+
+
+# =========================================================
+# СТАРТ
+# =========================================================
+
+@dp.message(CommandStart())
+async def start(message: Message):
+    user_id = message.from_user.id
+    get_user(user_id)
+
+    name = message.from_user.first_name or "друг"
+
+    text = (
+        f"👋 Привет, {name}!\n\n"
+        "💳 Личный финансовый помощник\n\n"
+        "Здесь можно:\n"
+        "• учитывать доходы\n"
+        "• записывать расходы\n"
+        "• смотреть баланс\n"
+        "• смотреть статистику\n"
+        "• просматривать историю операций\n\n"
+        "Выбирай действие ниже 👇"
+    )
+
+    await message.answer(
+        text,
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================================================
+# ГЛАВНОЕ МЕНЮ
+# =========================================================
+
+@dp.callback_query(F.data == "menu")
+async def menu(callback: CallbackQuery):
+    await callback.answer()
+
+    await callback.message.edit_text(
+        "🏠 Главное меню\n\nВыбери нужное действие:",
+        reply_markup=main_keyboard()
+    )
+
+
+# =========================================================
+# БАЛАНС
+# =========================================================
+
+@dp.callback_query(F.data == "balance")
+async def balance(callback: CallbackQuery):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+    current_balance = get_balance(user_id)
+
+    if current_balance > 0:
+        status = "🟢"
+    elif current_balance < 0:
+        status = "🔴"
+    else:
+        status = "⚪"
+
+    text = (
+        "💰 Текущий баланс\n\n"
+        f"{status} {current_balance:,.2f} ₽\n\n"
+        "Баланс рассчитан по всем сохранённым операциям."
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=back_keyboard()
+    )
+
+
+# =========================================================
+# СТАТИСТИКА
+# =========================================================
+
+@dp.callback_query(F.data == "stats")
+async def statistics(callback: CallbackQuery):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+
+    cursor.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0)
+        FROM transactions
+        WHERE user_id = ?
+        """,
+        (user_id,)
+    )
+
+    income, expense = cursor.fetchone()
+
+    balance_value = income - expense
+
+    text = (
+        "📊 Финансовая статистика\n\n"
+        f"🟢 Доходы: {income:,.2f} ₽\n"
+        f"🔴 Расходы: {expense:,.2f} ₽\n"
+        f"💰 Баланс: {balance_value:,.2f} ₽\n\n"
+        f"📈 Оборот: {income + expense:,.2f} ₽"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=back_keyboard()
+    )
+
+
+# =========================================================
+# ДОБАВЛЕНИЕ ДОХОДА
+# =========================================================
+
+@dp.callback_query(F.data == "income")
+async def income_start(callback: CallbackQuery):
+    await callback.answer()
+
+    await callback.message.edit_text(
+        "➕ Добавление дохода\n\n"
+        "Отправь сообщение в формате:\n\n"
+        "50000 зарплата\n\n"
+        "Сначала укажи сумму, затем комментарий.",
+        reply_markup=back_keyboard()
+    )
+
+
+# =========================================================
+# ДОБАВЛЕНИЕ РАСХОДА
+# =========================================================
+
+@dp.callback_query(F.data == "expense")
+async def expense_start(callback: CallbackQuery):
+    await callback.answer()
+
+    await callback.message.edit_text(
+        "➖ Добавление расхода\n\n"
+        "Отправь сообщение в формате:\n\n"
+        "1500 продукты\n\n"
+        "Сначала укажи сумму, затем комментарий.",
+        reply_markup=back_keyboard()
+    )
+
+
+# =========================================================
+# ОБРАБОТКА СУММ
+# =========================================================
+
+@dp.message(F.text)
+async def process_transaction(message: Message):
+    text = message.text.strip()
+
+    parts = text.split(maxsplit=1)
+
+    if not parts:
+        return
 
     try:
-        payment_id, url = await YooKassaClient().create_payment(order_id, amount, method)
-    except Exception:
-        await call.message.answer("⚠️ Не удалось создать оплату. Проверь настройки платёжного провайдера.")
-        await call.answer()
+        amount = float(
+            parts[0]
+            .replace(",", ".")
+            .replace("₽", "")
+            .replace("р", "")
+            .strip()
+        )
+    except ValueError:
         return
 
-    async with SessionLocal() as session:
-        order = await session.get(Order, order_id)
-        order.payment_id = payment_id
-        await session.commit()
+    if amount <= 0:
+        await message.answer(
+            "❌ Сумма должна быть больше нуля.",
+            reply_markup=main_keyboard()
+        )
+        return
 
-    await call.message.answer(
-        f"🧾 Заказ <b>#{order_id}</b>\n💰 {amount} ₽",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 ОПЛАТИТЬ", url=url)]
-        ])
+    comment = parts[1] if len(parts) > 1 else "Без комментария"
+
+    # Если перед этим пользователь нажал кнопку,
+    # Telegram не хранит состояние автоматически.
+    # Поэтому используем простое временное состояние.
+    user_id = message.from_user.id
+
+    state = user_states.get(user_id)
+
+    if state == "income":
+        new_balance = change_balance(
+            user_id,
+            amount,
+            "income",
+            comment
+        )
+
+        await message.answer(
+            "✅ Доход добавлен\n\n"
+            f"💵 Сумма: +{amount:,.2f} ₽\n"
+            f"📝 Комментарий: {comment}\n\n"
+            f"💰 Новый баланс: {new_balance:,.2f} ₽",
+            reply_markup=main_keyboard()
+        )
+
+        user_states.pop(user_id, None)
+
+    elif state == "expense":
+        new_balance = change_balance(
+            user_id,
+            amount,
+            "expense",
+            comment
+        )
+
+        await message.answer(
+            "✅ Расход добавлен\n\n"
+            f"💸 Сумма: -{amount:,.2f} ₽\n"
+            f"📝 Комментарий: {comment}\n\n"
+            f"💰 Новый баланс: {new_balance:,.2f} ₽",
+            reply_markup=main_keyboard()
+        )
+
+        user_states.pop(user_id, None)
+
+
+# =========================================================
+# СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ
+# =========================================================
+
+user_states = {}
+
+
+# =========================================================
+# ПЕРЕОПРЕДЕЛЯЕМ КНОПКИ ДОХОДА И РАСХОДА
+# =========================================================
+
+@dp.callback_query(F.data == "income")
+async def income_handler(callback: CallbackQuery):
+    await callback.answer()
+
+    user_states[callback.from_user.id] = "income"
+
+    await callback.message.edit_text(
+        "➕ Новый доход\n\n"
+        "Напиши сумму и описание.\n\n"
+        "Например:\n"
+        "50000 зарплата\n\n"
+        "Или:\n"
+        "3000 подработка",
+        reply_markup=back_keyboard()
     )
-    await call.answer()
 
-@dp.message(Command("orders"))
-async def orders(message: Message):
-    async with SessionLocal() as session:
-        user = await session.scalar(select(User).where(User.telegram_id == message.from_user.id))
-        if not user:
-            await message.answer("Заказов пока нет.")
-            return
-        rows = (await session.execute(
-            select(Order).where(Order.user_id == user.id).order_by(Order.id.desc()).limit(10)
-        )).scalars().all()
-    await message.answer("\n".join(
-        f"🧾 #{o.id} — {o.amount} ₽ — {o.status}" for o in rows
-    ) or "Заказов пока нет.")
 
-@dp.message(Command("banks"))
-async def banks(message: Message):
-    if message.from_user.id not in settings.admin_id_set:
+@dp.callback_query(F.data == "expense")
+async def expense_handler(callback: CallbackQuery):
+    await callback.answer()
+
+    user_states[callback.from_user.id] = "expense"
+
+    await callback.message.edit_text(
+        "➖ Новый расход\n\n"
+        "Напиши сумму и описание.\n\n"
+        "Например:\n"
+        "1500 продукты\n\n"
+        "Или:\n"
+        "2500 одежда",
+        reply_markup=back_keyboard()
+    )
+
+
+# =========================================================
+# ИСТОРИЯ
+# =========================================================
+
+@dp.callback_query(F.data == "history")
+async def history(callback: CallbackQuery):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+
+    cursor.execute(
+        """
+        SELECT amount, type, comment, created_at
+        FROM transactions
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT 15
+        """,
+        (user_id,)
+    )
+
+    transactions = cursor.fetchall()
+
+    if not transactions:
+        await callback.message.edit_text(
+            "📜 История пока пустая.\n\n"
+            "Добавь первую операцию.",
+            reply_markup=back_keyboard()
+        )
         return
-    async with SessionLocal() as session:
-        bs = await bank_stats(session)
-        ms = await method_stats(session)
-    text = ["🏦 <b>БАНКИ КЛИЕНТОВ</b>"]
-    text += [f"{i}. {name} — {count}" for i, (name, count) in enumerate(bs, 1)] or ["Нет данных"]
-    text += ["", "💳 <b>СПОСОБЫ ОПЛАТЫ</b>"]
-    text += [f"• {name} — {count}" for name, count in ms]
-    await message.answer("\n".join(text))
 
-@dp.message(Command("stock"))
-async def stock(message: Message):
-    if message.from_user.id not in settings.admin_id_set:
-        return
-    async with SessionLocal() as session:
-        products = (await session.execute(select(Product))).scalars().all()
-    await message.answer("\n".join(f"#{p.id} {p.name} — {p.price} ₽" for p in products) or "Товаров нет.")
+    lines = ["📜 Последние операции\n"]
 
-async def run_bot():
-    bot = Bot(settings.bot_token)
-    await dp.start_polling(bot)
+    for amount, transaction_type, comment, created_at in transactions:
+
+        if transaction_type == "income":
+            icon = "🟢"
+            sign = "+"
+        else:
+            icon = "🔴"
+            sign = "-"
+
+        lines.append(
+            f"{icon} {sign}{amount:,.2f} ₽\n"
+            f"   📝 {comment}\n"
+            f"   🕐 {created_at}\n"
+        )
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=back_keyboard()
+    )
+
+
+# =========================================================
+# ЗАПУСК
+# =========================================================
+
+async def main():
+    print("Бот запущен.")
+
+    await dp.start_polling(
+        bot,
+        allowed_updates=dp.resolve_used_update_types()
+    )
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
