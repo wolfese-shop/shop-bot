@@ -506,3 +506,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+async def run_bot():
+    await dp.start_polling(
+        bot,
+        allowed_updates=dp.resolve_used_update_types()
+    )
