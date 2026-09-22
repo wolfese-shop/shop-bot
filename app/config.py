@@ -11,6 +11,8 @@ ADMIN_IDS = {
     if x.strip()
 }
 
+SUPPORT_USERNAME = "@suport_wolfese_shop"
+
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не найден")
 
