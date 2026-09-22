@@ -643,7 +643,7 @@ async def admin_product_input(message: Message):
             reply_markup=admin_menu(),
         )
 
-
+#dd
 async def run_bot():
     init_db()
 
